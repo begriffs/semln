@@ -15,68 +15,38 @@ void u_assert(UErrorCode status, char *loc)
 	}
 }
 
-int32_t utext_file_read_safe(UText *ut, int32_t n, UFILE *f)
+int32_t u_file_read_safe(UChar *buf, int32_t n, UFILE *f)
 {
-	UErrorCode status = U_ZERO_ERROR;
-	UChar *buf = malloc(n * sizeof *buf);
-	if (!buf)
-		return -1;
-	int32_t ret = u_file_read(buf, n, f);
+	int32_t ret = u_file_read(buf, n-1, f);
 
 	/* if final code unit is an unpaired surrogate,
 	 * put it back for the next read */
 	if (ret > 0 && U16_IS_LEAD(buf[ret-1]) && !u_feof(f))
 		u_fungetc(buf[--ret], f);
-	utext_openUChars(ut, buf, ret, &status);
-	u_assert(status, "utext_openUChars");
+	buf[ret] = '\0';
 	return ret;
 }
 
-UText *utext_unlines(UText *t, UErrorCode *status)
+void u_unlines(UChar *buf, int32_t bufsz, UErrorCode *status)
 {
 	static URegularExpression *newlines_re;
-	static UText *space;
+	static UChar space[] = {' '};
+
 	if (!newlines_re)
 	{
 		newlines_re = uregex_openC(
-			"[\\n\\r\\u2028]+", 0, NULL, status);
+			"[\n\r\u2028]+", 0, NULL, status);
 		u_assert(*status, "newlines_re");
 	}
-	if (!space)
-	{
-		space = utext_openUTF8(NULL, " ", -1, status);
-		u_assert(*status, "utext_openUTF8");
-	}
-	uregex_setUText(newlines_re, t, status);
-	u_assert(*status, "uregex_setUText");
-	return uregex_replaceAllUText(newlines_re, space, t, status);
-}
-
-int32_t utext_fputs(UText *t, UFILE *f)
-{
-	int32_t len;
-	UChar *native;
-	UErrorCode status = U_ZERO_ERROR;
-
-	/* preflight to get len */
-	len = utext_extract(t, 0, INT32_MAX, NULL, 0, &status);
-	status = U_ZERO_ERROR;
-	native = malloc((len+1) * sizeof *native);
-	if (!native)
-		return -1;
-	len = utext_extract(t, 0, INT32_MAX, native, len+1, &status);
-	u_assert(status, "utext_extract");
-	len = u_fputs(native, f);
-	free(native);
-	return len;
+	uregex_setText(newlines_re, buf, -1, status);
+	u_assert(*status, "uregex_setText");
+	uregex_replaceAll(newlines_re, space, 1, buf, bufsz, status);
 }
 
 int main(void)
 {
 	UFILE *in, *out;
 	char *locale;
-	//UBreakIterator *brk;
-	int32_t len;
 
 	/* sentence breaks are locale-specific, so we'll obtain
 	 * LC_CTYPE from the environment */
@@ -93,21 +63,15 @@ int main(void)
 	}
 	out = u_get_stdout();
 
-	UText chunk = UTEXT_INITIALIZER,
-		  buf = UTEXT_INITIALIZER;
-	while ((len = utext_file_read_safe(&chunk, BUFSIZ, in)) > 0)
+	int32_t len;
+	UChar buf[BUFSIZ];
+	while ((len = u_file_read_safe(buf, BUFSIZ, in)) > 0)
 	{
 		UErrorCode status = U_ZERO_ERROR;
-
-		utext_clone(&buf, &chunk, TRUE, FALSE, &status);
-		u_assert(status, "utext_clone");
-
-		utext_unlines(&buf, &status);
+		u_unlines(buf, BUFSIZ, &status);
 		u_assert(status, "u_unlines");
-		utext_fputs(&buf, out);
+		u_fprintf(out, "%.*S", len, buf);
 	}
-	utext_close(&chunk);
-	utext_close(&buf);
 	u_fclose(in);
 	return 0;
 }
