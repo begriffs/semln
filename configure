@@ -1,0 +1,11 @@
+#!/bin/sh -eu
+
+rm -f config.mk
+
+pkg-config --print-errors 'libcmark >= 0.20, icu-uc, icu-io'
+
+cat >> config.mk <<-EOF
+	CFLAGS  += $(pkg-config --cflags libcmark icu-uc icu-io)
+	LDFLAGS += $(pkg-config --libs-only-L libcmark icu-uc icu-io)
+	LDLIBS  += $(pkg-config --libs-only-l libcmark icu-uc icu-io)
+EOF
