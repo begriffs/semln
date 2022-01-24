@@ -1,6 +1,10 @@
-CFLAGS = -g -std=c99 -pedantic -Wall -Wextra -Wshadow
-CFLAGS  += -I/usr/local/include
-LDFLAGS += -L/usr/local/lib
-LDLIBS  +=  -lcmark -licuio -licui18n -licuuc -licudata
+.POSIX:
 
-mdline : mdline.c
+CFLAGS = -g -std=c99 -pedantic -Wall -Wextra -Wshadow
+
+include config.mk
+
+.c:
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+
+semln : semln.c
