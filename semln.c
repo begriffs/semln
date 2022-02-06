@@ -1,4 +1,5 @@
 #include <locale.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -8,7 +9,16 @@
 #include <unicode/uregex.h>
 #include <unicode/ustring.h>
 
-char locale[100] = "en_US@ss=standard";
+#define ARR_LEN(a) ((sizeof(a))/sizeof(*(a)))
+
+char g_locale[100] = "en_US@ss=standard";
+
+struct match_stats
+{
+	bool para_sep;
+	int breaks;
+	int len;
+};
 
 void u_assert(UErrorCode status, char *loc)
 {
@@ -28,25 +38,73 @@ void init_locale(void)
 		fputs("HINT: set the LC_ALL environment variable.\n", stderr);
 		exit(EXIT_FAILURE);
 	}
-	uloc_canonicalize(posix_loc, locale, sizeof locale, &status);
+	uloc_canonicalize(posix_loc, g_locale, ARR_LEN(g_locale), &status);
 	u_assert(status, "uloc_canonicalize");
 
 	/* use segmentation suppression (preventing sentence breaks in English
 	 * after abbreviations such as "Mr." or "Est.", for example) */
-	uloc_setKeywordValue("ss", "standard", locale, sizeof locale, &status);
+	uloc_setKeywordValue("ss", "standard", g_locale, ARR_LEN(g_locale), &status);
 	u_assert(status, "uloc_setKeywordValue");
 }
 
+struct match_stats
+get_match_stats(URegularExpression *re, UChar *buf, int32_t n)
+{
+	;
+	UErrorCode status = U_ZERO_ERROR;
+	struct match_stats ret = (struct match_stats){0};
+	static UBreakIterator *brk;
+   
+	if (!brk)
+	{
+		brk = ubrk_open(UBRK_LINE, g_locale, NULL, -1, &status);
+		u_assert(status, "ubrk_open");
+	}
+
+	/***** get length ******/
+	uregex_setText(re, buf, n, &status);
+	u_assert(status, "uregex_setText");
+	if (!uregex_find(re, 0, &status))
+		return ret;
+	int32_t start = uregex_start(re, 0, &status),
+			end   = uregex_end(re, 0, &status);
+	if (start == end)
+		return ret;
+	ret.len = end - start;
+
+	/***** count breaks ******/
+	ubrk_setText(brk, buf+start, end-start, &status);
+	u_assert(status, "ubrk_setText");
+   	ubrk_first(brk);
+	while (ret.breaks < 2 /* 2 implies a para break */
+	       && ubrk_next(brk) != UBRK_DONE)
+	{
+		int32_t type = ubrk_getRuleStatus(brk);
+		if (UBRK_LINE_HARD <= type && type < UBRK_LINE_HARD_LIMIT)
+			ret.breaks++;
+	}
+
+	/***** detect explicit paragraph sep ******/
+	UChar temp = buf[end];
+	buf[end] = '\0';
+	ret.para_sep = u_strchr32(buf+start, 0x2029) != NULL;
+	buf[end] = temp;
+
+	return ret;
+}
 
 int32_t u_file_read_safe(UChar *buf, int32_t n, UFILE *f)
 {
 	int32_t ret = u_file_read(buf, n-1, f);
 
-	/* if final code unit is an unpaired surrogate,
-	 * put it back for the next read */
-	if (ret > 0 && U16_IS_LEAD(buf[ret-1]) && !u_feof(f))
+	/* if final code unit is an unpaired surrogate, or
+	 * a carriage return, put it back for the next read */
+	if (ret > 0 && !u_feof(f) &&
+		(U16_IS_LEAD(buf[ret-1]) || buf[ret-1] == '\r'))
+	{
 		u_fungetc(buf[--ret], f);
-	buf[ret] = '\0';
+	}
+	buf[ret > 0 ? ret : 0] = '\0';
 	return ret;
 }
 
@@ -57,13 +115,13 @@ void u_unlines(UChar *buf, int32_t bufsz, UErrorCode *status)
 
 	if (!newlines_re)
 	{
-		newlines_re = uregex_openC(
-			"[\n\r\u2028]+", 0, NULL, status);
+		newlines_re = uregex_openC("\\s+", 0, NULL, status);
 		u_assert(*status, "newlines_re");
 	}
 	uregex_setText(newlines_re, buf, -1, status);
-	u_assert(*status, "uregex_setText");
+	u_assert(*status, "u_unlines, uregex_setText");
 	uregex_replaceAll(newlines_re, space, 1, buf, bufsz, status);
+	u_assert(*status, "u_unlines, uregex_replaceAll");
 }
 
 int main(void)
@@ -85,50 +143,45 @@ int main(void)
 
 	UErrorCode status = U_ZERO_ERROR;
 	UBreakIterator
-		*brk = ubrk_open(UBRK_SENTENCE, locale, NULL, -1, &status);
+		*brk = ubrk_open(UBRK_SENTENCE, g_locale, NULL, -1, &status);
 	u_assert(status, "ubrk_open");
 
-
-	/* at least two newlines or one paragraph separator in a row */
-	static URegularExpression *para_re;
-	para_re = uregex_openC(
-		"(.+?)((\u2028|\n|\r\n){2,}|\u2029+|$)", UREGEX_DOTALL, NULL, &status);
-	u_assert(status, "para_re");
+	static URegularExpression *pad_start_re, *pad_end_re;
+	pad_start_re = uregex_openC("^\\s*", 0, NULL, &status);
+	pad_end_re   = uregex_openC("\\s*$", 0, NULL, &status);
+	u_assert(status, "uregex_openC");
 
 	int32_t len;
-	UChar buf[BUFSIZ], para[BUFSIZ];
+	UChar buf[BUFSIZ], sentence[BUFSIZ];
 	while ((len = u_file_read_safe(buf, BUFSIZ, in)) > 0)
 	{
-		int32_t type;
-		uregex_setText(para_re, buf, len, &status);
-		u_assert(status, "uregex_setText");
-
-		/* iterate paragraphs */
-		while (uregex_findNext(para_re, &status))
+		/* iterate sentences */
+		ubrk_setText(brk, buf, len, &status);
+		u_assert(status, "ubrk_setText");
+		int32_t from_s = ubrk_first(brk), to_s;
+		while ((to_s = ubrk_next(brk)) != UBRK_DONE)
 		{
-			u_assert(status, "uregex_findNext");
-			int32_t start = uregex_start(para_re, 1, &status),
-			        end   = uregex_end(para_re, 1, &status);
-			u_assert(status, "uregex_start/end");
-			u_snprintf(para, end-start, "%S", buf + start);
-			u_unlines(para, BUFSIZ, &status);
-			//u_assert(status, "u_unlines");
-			status = U_ZERO_ERROR;
+			struct match_stats
+				start_stats =
+					get_match_stats(pad_start_re, buf+from_s, to_s - from_s),
+				end_stats =
+					get_match_stats(pad_end_re, buf+from_s, to_s - from_s);
 
-			/* iterate sentences */
-			ubrk_setText(brk, para, end-start, &status);
-			u_assert(status, "ubrk_setText");
-			int32_t from_s = ubrk_first(brk), to_s;
-			while ((to_s = ubrk_next(brk)) != UBRK_DONE)
-			{
-				u_fprintf(out, "%.*S", to_s - from_s, para + from_s);
-				type = ubrk_getRuleStatus(brk);
-				if (UBRK_SENTENCE_TERM <= type && type < UBRK_SENTENCE_TERM_LIMIT)
-					u_fprintf(out, "S\n");
-				from_s = to_s;
-			}
-			u_fputc('\n', out);
-			//u_fprintf(out, "P(%d-%d)\n", start, end);
+			/* even one newline at start signals new para */
+			if (start_stats.para_sep || start_stats.breaks > 0)
+				u_fputc('\n', out);
+
+			/* extract sentence from match, sans padding */
+			u_snprintf(sentence,
+				to_s - from_s - start_stats.len - end_stats.len,
+				"%S", buf + from_s + start_stats.len);
+
+			//u_unlines(sentence, ARR_LEN(sentence), &status);
+			u_fprintf(out, "%S\n", sentence);
+			if (end_stats.para_sep || end_stats.breaks > 1)
+				u_fputc('\n', out);
+
+			from_s = to_s;
 		}
 	}
 	u_fclose(in);
