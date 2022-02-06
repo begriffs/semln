@@ -111,8 +111,9 @@ int32_t u_file_read_safe(UChar *buf, int32_t n, UFILE *f)
 void u_unlines(UChar *buf, int32_t bufsz, UErrorCode *status)
 {
 	static URegularExpression *newlines_re;
-	static UChar space[] = {' '};
+	static UChar space[] = {'-'};
 
+	UChar *temp = malloc(bufsz * sizeof *buf);
 	if (!newlines_re)
 	{
 		newlines_re = uregex_openC("\\s+", 0, NULL, status);
@@ -120,10 +121,11 @@ void u_unlines(UChar *buf, int32_t bufsz, UErrorCode *status)
 	}
 	uregex_setText(newlines_re, buf, -1, status);
 	u_assert(*status, "u_unlines, uregex_setText");
-	uregex_replaceAll(newlines_re, space, 1, buf, bufsz, status);
+	uregex_replaceAll(newlines_re, space, 1, temp, bufsz, status);
 	u_assert(*status, "u_unlines, uregex_replaceAll");
+	u_strcpy(buf, temp);
+	free(temp);
 }
-
 int main(void)
 {
 	UFILE *in, *out;
@@ -168,8 +170,8 @@ int main(void)
 					get_match_stats(pad_end_re, buf+from_s, to_s - from_s);
 
 			/* even one newline at start signals new para */
-			if (start_stats.para_sep || start_stats.breaks > 0)
-				u_fputc('\n', out);
+			//if (start_stats.para_sep || start_stats.breaks > 0)
+			//	u_fputc('\n', out);
 
 			/* extract sentence from match, sans padding */
 			if ((to_s - from_s) > (start_stats.len + end_stats.len))
@@ -182,14 +184,17 @@ int main(void)
 				);
 
 				//u_unlines(sentence, ARR_LEN(sentence), &status);
-				u_fprintf(out, "{{{(%d)%03d-%03d(%d) %S}}}",
-						start_stats.len, from_s, to_s, end_stats.len, sentence);
+				u_fprintf(out, "{{{%S}}}", sentence);
 			}
 			int32_t type = ubrk_getRuleStatus(brk);
+			u_fprintf(out, "--(%d)--", type);
 			if (UBRK_SENTENCE_TERM <= type && type < UBRK_SENTENCE_TERM_LIMIT)
-				u_fputc('\n', out);
-			if (end_stats.para_sep || end_stats.breaks > 1)
-				u_fputc('\n', out);
+				u_fprintf(out, "***\n");
+			else if (UBRK_SENTENCE_SEP <= type && type < UBRK_SENTENCE_SEP_LIMIT)
+				u_fprintf(out, "!!!");
+
+			//if (end_stats.para_sep || end_stats.breaks > 1)
+			//	u_fputc('\n', out);
 
 			from_s = to_s;
 		}
