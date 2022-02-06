@@ -172,12 +172,22 @@ int main(void)
 				u_fputc('\n', out);
 
 			/* extract sentence from match, sans padding */
-			u_snprintf(sentence,
-				to_s - from_s - start_stats.len - end_stats.len,
-				"%S", buf + from_s + start_stats.len);
+			if ((to_s - from_s) > (start_stats.len + end_stats.len))
+			{
+				sentence[0] = '\0';
+				u_strncat(
+					sentence,
+					buf + from_s + start_stats.len,
+					to_s - from_s - start_stats.len - end_stats.len
+				);
 
-			//u_unlines(sentence, ARR_LEN(sentence), &status);
-			u_fprintf(out, "%S\n", sentence);
+				//u_unlines(sentence, ARR_LEN(sentence), &status);
+				u_fprintf(out, "{{{(%d)%03d-%03d(%d) %S}}}",
+						start_stats.len, from_s, to_s, end_stats.len, sentence);
+			}
+			int32_t type = ubrk_getRuleStatus(brk);
+			if (UBRK_SENTENCE_TERM <= type && type < UBRK_SENTENCE_TERM_LIMIT)
+				u_fputc('\n', out);
 			if (end_stats.para_sep || end_stats.breaks > 1)
 				u_fputc('\n', out);
 
